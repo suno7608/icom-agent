@@ -11,6 +11,7 @@ icom-agent/
 ├── optimizer/          # 최적화 모듈
 ├── simulator/          # 시뮬레이터
 ├── dashboard/          # Streamlit 대시보드
+├── web-dashboard/      # React 웹 대시보드
 ├── shared/             # 공통 유틸리티
 ├── tests/              # 테스트
 └── models/             # 저장된 모델
@@ -34,8 +35,11 @@ pip install -r requirements.txt
 ## 실행
 
 ```bash
-# 대시보드 실행
+# Streamlit 대시보드 실행
 streamlit run dashboard/app.py
+
+# React 웹 대시보드 실행
+cd web-dashboard && npm run dev
 
 # API 서버 실행 (Phase 1)
 uvicorn api.main:app --reload

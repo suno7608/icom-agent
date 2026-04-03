@@ -65,3 +65,6 @@ data/*.xlsx
 # Logs
 *.log
 logs/
+web-dashboard/node_modules/
+web-dashboard/dist/
+web-dashboard/.vercel/

@@ -33,9 +33,9 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Constants
 # =============================================================================
-ROI_THRESHOLD = 5.0       # ROI ≥ 5 → 투자, ROI < 5 → 중단
-BUDGET_STEP = 500_000     # 예산 증가 단위: 50만원
-MAX_BUDGET = 5_000_000    # 캠페인 최대 광고 예산: 500만원
+ROI_THRESHOLD = settings.ROI_THRESHOLD
+BUDGET_STEP = settings.BUDGET_STEP
+MAX_BUDGET = settings.MAX_BUDGET
 
 
 # =============================================================================

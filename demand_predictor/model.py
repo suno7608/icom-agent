@@ -24,8 +24,11 @@ from sklearn.metrics import mean_absolute_percentage_error, mean_absolute_error,
 
 try:
     from xgboost import XGBRegressor
+    XGBOOST_AVAILABLE = True
 except ImportError:
     XGBRegressor = None
+    XGBOOST_AVAILABLE = False
+    logger.warning("xgboost not installed. Install with: pip install xgboost")
 
 from demand_predictor.features import FEATURE_COLUMNS, TARGET_COLUMN
 
@@ -144,10 +147,18 @@ class DemandPredictor:
         predictions = self.model.predict(X)
         predictions = np.maximum(predictions, 0).astype(int)
 
-        # Simple confidence interval based on training error
+        # Confidence interval based on training error + prediction uncertainty
         mape_decimal = self.metrics.get("mape", 20) / 100
-        lower = (predictions * (1 - mape_decimal)).astype(int)
-        upper = (predictions * (1 + mape_decimal)).astype(int)
+        mae = self.metrics.get("mae", 0)
+        # Combine relative (MAPE) and absolute (MAE) errors for better bounds
+        lower = np.minimum(
+            predictions * (1 - mape_decimal),
+            predictions - mae
+        ).astype(int)
+        upper = np.maximum(
+            predictions * (1 + mape_decimal),
+            predictions + mae
+        ).astype(int)
 
         result = df[["campaign_id"]].copy() if "campaign_id" in df.columns else pd.DataFrame()
         result["predicted_sales"] = predictions

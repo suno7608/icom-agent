@@ -27,6 +27,57 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Token Encryption Utility
+# =============================================================================
+class TokenEncryption:
+    """Encrypt/decrypt Instagram tokens using Fernet symmetric encryption."""
+
+    def __init__(self, key: str = None):
+        self._key = key or settings.TOKEN_ENCRYPTION_KEY
+        self._fernet = None
+
+    def _get_fernet(self):
+        if self._fernet is None:
+            if not self._key:
+                logger.warning("TOKEN_ENCRYPTION_KEY not set — tokens stored in plaintext")
+                return None
+            try:
+                from cryptography.fernet import Fernet
+                # If key is not valid Fernet key, derive one
+                import base64, hashlib
+                if len(self._key) != 44 or not self._key.endswith("="):
+                    derived = base64.urlsafe_b64encode(
+                        hashlib.sha256(self._key.encode()).digest()
+                    )
+                    self._fernet = Fernet(derived)
+                else:
+                    self._fernet = Fernet(self._key.encode())
+            except ImportError:
+                logger.warning("cryptography package not installed — tokens stored in plaintext")
+                return None
+        return self._fernet
+
+    def encrypt(self, token: str) -> str:
+        fernet = self._get_fernet()
+        if fernet is None:
+            return token
+        return fernet.encrypt(token.encode()).decode()
+
+    def decrypt(self, encrypted_token: str) -> str:
+        fernet = self._get_fernet()
+        if fernet is None:
+            return encrypted_token
+        try:
+            return fernet.decrypt(encrypted_token.encode()).decode()
+        except Exception:
+            # Might be a plaintext token from before encryption was enabled
+            return encrypted_token
+
+
+_token_crypto = TokenEncryption()
+
+
+# =============================================================================
 # Instagram OAuth Manager
 # =============================================================================
 class InstagramOAuthManager:
@@ -188,7 +239,7 @@ class InstagramOAuthManager:
             session.add(influencer)
 
         influencer.ig_user_id = ig_user_id
-        influencer.ig_access_token = long_token  # TODO: encrypt with TOKEN_ENCRYPTION_KEY
+        influencer.ig_access_token = _token_crypto.encrypt(long_token)
         influencer.ig_token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
         influencer.oauth_connected = 1
         influencer.followers_count = profile.get("followers_count", influencer.followers_count)
@@ -260,7 +311,7 @@ class InstagramInsightsCollector:
             logger.warning(f"Influencer {influencer.instagram_id} not OAuth connected")
             return None
 
-        token = influencer.ig_access_token
+        token = _token_crypto.decrypt(influencer.ig_access_token)
 
         # Find media ID from post URL
         media_id = await self._find_media_id(
@@ -325,8 +376,13 @@ class InstagramInsightsCollector:
             if post_url and media.get("permalink", "").rstrip("/") == post_url.rstrip("/"):
                 return media["id"]
 
-        # If no URL match, return most recent
-        return media_list[0]["id"] if media_list else None
+        # If no URL match, log warning and return None (don't guess)
+        if media_list:
+            logger.warning(
+                f"No permalink match for '{post_url}' among {len(media_list)} media. "
+                f"Skipping to avoid collecting wrong post's metrics."
+            )
+        return None
 
     async def _get_media_insights(self, token: str, media_id: str) -> dict:
         """Fetch insights for a specific media item."""
@@ -408,8 +464,9 @@ class TokenRefreshService:
 
         for inf in expiring:
             try:
-                data = await self.oauth.refresh_long_lived_token(inf.ig_access_token)
-                inf.ig_access_token = data["access_token"]
+                decrypted_token = _token_crypto.decrypt(inf.ig_access_token)
+                data = await self.oauth.refresh_long_lived_token(decrypted_token)
+                inf.ig_access_token = _token_crypto.encrypt(data["access_token"])
                 inf.ig_token_expires_at = datetime.utcnow() + timedelta(
                     seconds=data.get("expires_in", 5184000)
                 )

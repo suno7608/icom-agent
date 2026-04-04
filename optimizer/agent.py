@@ -30,11 +30,18 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional, Any
 
-from langgraph.graph import StateGraph, END
+try:
+    from langgraph.graph import StateGraph, END
+    LANGGRAPH_AVAILABLE = True
+except ImportError:
+    StateGraph = None
+    END = "end"
+    LANGGRAPH_AVAILABLE = False
 
 from sqlalchemy.orm import Session
 
 from shared.db import Campaign, Influencer, Product, SocialMetric, Order
+from shared.config import settings
 from demand_predictor.model import DemandPredictor
 from demand_predictor.features import build_feature_dataframe
 from simulator.ad_simulator import AdSpendSimulator
@@ -87,9 +94,9 @@ class ICOMAgent:
     전체 파이프라인을 자율적으로 수행.
     """
 
-    # Tier thresholds
-    TIER_HIGH = 500    # predicted >= 500 → 대박
-    TIER_LOW = 100     # predicted < 100 → 저조
+    # Tier thresholds (from config)
+    TIER_HIGH = settings.TIER_HIGH_THRESHOLD
+    TIER_LOW = settings.TIER_LOW_THRESHOLD
 
     def __init__(self, db: Session, predictor: Optional[DemandPredictor] = None):
         self.db = db
@@ -98,7 +105,12 @@ class ICOMAgent:
         self.deal_simulator = DealSimulator(db)
         self.roi_optimizer = ROIOptimizer(db)
         self.matching_engine = MatchingEngine(db)
-        self.graph = self._build_graph()
+
+        if not LANGGRAPH_AVAILABLE:
+            logger.warning("langgraph not installed — agent will use fallback sequential execution")
+            self.graph = None
+        else:
+            self.graph = self._build_graph()
 
     # =========================================================================
     # Tools — 6 core capabilities
@@ -535,7 +547,10 @@ class ICOMAgent:
         logger.info(f"[AGENT] Starting ICOM Agent for campaign_id={campaign_id}")
 
         try:
-            final_state = self.graph.invoke(initial_state)
+            if self.graph is None:
+                final_state = self._run_sequential(initial_state)
+            else:
+                final_state = self.graph.invoke(initial_state)
             report = final_state.get("final_report", {})
             logger.info(f"[AGENT] Completed. Steps: {final_state.get('steps_executed', [])}")
             return report
@@ -548,6 +563,39 @@ class ICOMAgent:
                 "steps_executed": initial_state.get("steps_executed", []),
                 "completed_at": datetime.utcnow().isoformat(),
             }
+
+    def _run_sequential(self, state: dict) -> dict:
+        """Fallback: sequential execution without LangGraph."""
+        s = AgentState(**{k: v for k, v in state.items() if hasattr(AgentState, k)})
+
+        # Step 1: Detect
+        s = self.detect_new_post(s)
+        if s.errors and not s.campaign:
+            s = self._generate_report(s)
+            return s.__dict__
+
+        # Step 2: Predict
+        s = self.predict_demand(s)
+
+        # Step 3: Classify
+        s = self._classify_tier(s)
+
+        # Step 4: Branch based on tier
+        if s.tier == CampaignTier.FLOP:
+            s = self._stop_or_switch(s)
+        else:
+            s = self.simulate_scenarios(s)
+            s = self.secure_stock(s)
+            s = self.optimize_ad(s)
+            # Monitor loop
+            while s.monitor_cycles < s.max_monitor_cycles:
+                s = self._monitor(s)
+                if s.tier == CampaignTier.FLOP or (s.current_roi < settings.ROI_THRESHOLD and s.monitor_cycles > 0):
+                    break
+
+        # Step 5: Report
+        s = self._generate_report(s)
+        return s.__dict__
 
     # =========================================================================
     # Helpers

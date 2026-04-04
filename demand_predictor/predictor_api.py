@@ -30,9 +30,12 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, Header
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
+from contextlib import asynccontextmanager
+import threading
 
 from shared.db import (
     init_db, SessionLocal,
@@ -56,12 +59,32 @@ from demand_predictor.anomaly_detector import AnomalyDetector
 logger = logging.getLogger(__name__)
 
 # =============================================================================
+# Lifespan Management
+# =============================================================================
+@asynccontextmanager
+async def lifespan(app):
+    init_db()
+    logger.info("ICOM Agent API started")
+    yield
+    logger.info("ICOM Agent API shutting down")
+
+# =============================================================================
 # FastAPI App
 # =============================================================================
 app = FastAPI(
     title="ICOM Agent API",
     description="인플루언서 커머스 최적화 에이전트 API — Phase 1~3 통합",
-    version="2.0.0",
+    version="2.1.0",
+    lifespan=lifespan,
+)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -74,35 +97,39 @@ def get_db():
         db.close()
 
 
-# Global predictor (loaded once)
+# API Key authentication
+async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
+    """Simple API key authentication."""
+    expected_key = os.getenv("ICOM_API_KEY", "")
+    if not expected_key:
+        return  # No key configured = open access (dev mode)
+    if x_api_key != expected_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+# Global predictor (loaded once, thread-safe)
 _predictor: Optional[DemandPredictor] = None
+_predictor_lock = threading.Lock()
 
 
 def get_predictor() -> DemandPredictor:
     global _predictor
     if _predictor is None:
-        _predictor = DemandPredictor()
-        try:
-            _predictor.load()
-        except FileNotFoundError:
-            logger.warning("No saved model found. Train a model first.")
+        with _predictor_lock:
+            if _predictor is None:  # Double-check after acquiring lock
+                _predictor = DemandPredictor()
+                try:
+                    _predictor.load()
+                except FileNotFoundError:
+                    logger.warning("No saved model found. Train a model first.")
     return _predictor
-
-
-# =============================================================================
-# Startup
-# =============================================================================
-@app.on_event("startup")
-async def startup():
-    init_db()
-    logger.info("ICOM Agent API started")
 
 
 # =============================================================================
 # Prediction Endpoints
 # =============================================================================
 @app.post("/api/predict/{campaign_id}", response_model=PredictionResponse)
-async def predict_demand(campaign_id: int, req: PredictionRequest = None, db: Session = Depends(get_db)):
+async def predict_demand(campaign_id: int, req: PredictionRequest = None, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """초기 반응 기반 수요 예측 실행."""
     campaign = db.query(Campaign).filter_by(id=campaign_id).first()
     if not campaign:
@@ -174,7 +201,7 @@ async def list_campaigns(
 
 
 @app.post("/api/campaigns", response_model=CampaignResponse)
-async def create_campaign(req: CampaignCreate, db: Session = Depends(get_db)):
+async def create_campaign(req: CampaignCreate, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """신규 캠페인 등록."""
     # Validate FK references
     influencer = db.query(Influencer).filter_by(id=req.influencer_id).first()
@@ -312,6 +339,7 @@ async def simulate_ad_spend(
     campaign_id: int,
     budgets: Optional[list[float]] = None,
     db: Session = Depends(get_db),
+    _: None = Depends(verify_api_key),
 ):
     """광고비 시뮬레이션: 예산 시나리오별 ROI 비교."""
     try:
@@ -348,6 +376,7 @@ async def simulate_deal(
     campaign_id: int,
     override_qty: Optional[int] = None,
     db: Session = Depends(get_db),
+    _: None = Depends(verify_api_key),
 ):
     """공급사 딜 시뮬레이션: 수수료/공급가 재협상 비교."""
     try:
@@ -380,7 +409,7 @@ async def simulate_deal(
 # Phase 2: Optimization Endpoints
 # =============================================================================
 @app.post("/api/optimize/ad")
-async def optimize_ad(campaign_id: int, db: Session = Depends(get_db)):
+async def optimize_ad(campaign_id: int, db: Session = Depends(get_db), _: None = Depends(verify_api_key)):
     """ROI 기반 광고 최적화: 평가→계획→실행."""
     try:
         optimizer = ROIOptimizer(db)
@@ -471,6 +500,7 @@ async def get_demand_gaps(
 async def run_agent(
     campaign_id: Optional[int] = None,
     db: Session = Depends(get_db),
+    _: None = Depends(verify_api_key),
 ):
     """자율 에이전트 실행: 감지→예측→결정→실행→보고."""
     agent = ICOMAgent(db)
@@ -550,4 +580,4 @@ async def check_all_anomalies(db: Session = Depends(get_db)):
 # =============================================================================
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.0.0", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "version": "2.1.0", "timestamp": datetime.utcnow().isoformat()}

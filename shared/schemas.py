@@ -3,7 +3,7 @@ ICOM Agent - Pydantic Schemas
 PRD 4.3 기반 API 입출력 스키마
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 
 
@@ -62,8 +62,7 @@ class CampaignResponse(BaseModel):
     roi: float | None
     posted_at: datetime | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # =============================================================================
@@ -86,8 +85,7 @@ class InfluencerResponse(BaseModel):
     total_revenue: float
     oauth_connected: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # =============================================================================

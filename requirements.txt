@@ -33,9 +33,13 @@ httpx==0.28.1
 streamlit==1.44.1
 
 # LLM / Agent (Phase 2-3)
-# langchain==0.3.x
-# langgraph==0.3.x
-# openai==1.x
+langchain>=0.3.0
+langgraph>=0.3.0
+openai>=1.0.0
+langchain-openai>=0.3.0
+
+# Security
+cryptography>=42.0.0
 
 # Scheduling
 apscheduler==3.11.0

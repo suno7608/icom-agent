@@ -42,6 +42,9 @@ class SmartStoreClient:
     BASE_URL = "https://api.commerce.naver.com/external"
     AUTH_URL = "https://api.commerce.naver.com/external/v1/oauth2/token"
 
+    _request_semaphore = None  # Lazy-init for rate limiting
+    MAX_CONCURRENT_REQUESTS = 5
+
     def __init__(
         self,
         client_id: str = None,
@@ -60,15 +63,17 @@ class SmartStoreClient:
         return self._http
 
     def _generate_signature(self) -> tuple[str, str]:
-        """Generate HMAC signature for SmartStore auth."""
+        """Generate HMAC-SHA256 signature for SmartStore auth."""
+        import hmac
         timestamp = str(int(time.time() * 1000))
-        password = f"{self.client_id}_{timestamp}"
-        signature = hashlib.bcrypt if hasattr(hashlib, 'bcrypt') else None
-        # SmartStore uses client_id + client_secret + timestamp
-        hashed = hashlib.sha256(
-            f"{self.client_id}{self.client_secret}{timestamp}".encode()
+        # Naver Commerce API: HMAC-SHA256(client_id + "_" + timestamp, client_secret)
+        message = f"{self.client_id}_{timestamp}"
+        signature = hmac.new(
+            self.client_secret.encode("utf-8"),
+            message.encode("utf-8"),
+            hashlib.sha256,
         ).hexdigest()
-        return timestamp, hashed
+        return timestamp, signature
 
     async def _authenticate(self) -> str:
         """Obtain or refresh OAuth 2.0 access token."""
@@ -100,37 +105,42 @@ class SmartStoreClient:
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
         """Make authenticated API request with retry logic."""
+        if self._request_semaphore is None:
+            import asyncio
+            self._request_semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_REQUESTS)
+
         max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                token = await self._authenticate()
-                http = await self._get_http()
+        async with self._request_semaphore:
+            for attempt in range(1, max_retries + 1):
+                try:
+                    token = await self._authenticate()
+                    http = await self._get_http()
 
-                response = await http.request(
-                    method,
-                    f"{self.BASE_URL}{path}",
-                    headers={"Authorization": f"Bearer {token}"},
-                    **kwargs,
-                )
-                response.raise_for_status()
-                return response.json()
+                    response = await http.request(
+                        method,
+                        f"{self.BASE_URL}{path}",
+                        headers={"Authorization": f"Bearer {token}"},
+                        **kwargs,
+                    )
+                    response.raise_for_status()
+                    return response.json()
 
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 401:
-                    self._access_token = None  # Force re-auth
-                    logger.warning(f"Auth expired, retrying ({attempt}/{max_retries})")
-                elif attempt == max_retries:
-                    logger.error(f"API request failed after {max_retries} attempts: {e}")
-                    raise
-                else:
-                    logger.warning(f"API error (attempt {attempt}/{max_retries}): {e}")
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 401:
+                        self._access_token = None  # Force re-auth
+                        logger.warning(f"Auth expired, retrying ({attempt}/{max_retries})")
+                    elif attempt == max_retries:
+                        logger.error(f"API request failed after {max_retries} attempts: {e}")
+                        raise
+                    else:
+                        logger.warning(f"API error (attempt {attempt}/{max_retries}): {e}")
 
-            except (httpx.ConnectError, httpx.TimeoutException) as e:
-                if attempt == max_retries:
-                    logger.error(f"Connection failed after {max_retries} attempts: {e}")
-                    raise
-                logger.warning(f"Connection error (attempt {attempt}/{max_retries}): {e}")
-                await self._sleep(2 ** attempt)
+                except (httpx.ConnectError, httpx.TimeoutException) as e:
+                    if attempt == max_retries:
+                        logger.error(f"Connection failed after {max_retries} attempts: {e}")
+                        raise
+                    logger.warning(f"Connection error (attempt {attempt}/{max_retries}): {e}")
+                    await self._sleep(2 ** attempt)
 
         return {}
 
@@ -265,22 +275,35 @@ class OrderSyncService:
     def _map_to_campaign(self, order_detail: dict, session: Session) -> Optional[int]:
         """
         Map an order to a campaign using URL tracking parameters.
-        SmartStore orders may contain referral URLs with campaign tracking.
+        Falls back to product-based matching if no tracking param found.
         """
         referral_url = order_detail.get("inflowPath", "")
-        if not referral_url:
-            return None
 
-        try:
-            parsed = urlparse(referral_url)
-            params = parse_qs(parsed.query)
-            campaign_ref = params.get("campaign_id", [None])[0]
+        # Strategy 1: Direct campaign_id from URL parameter
+        if referral_url:
+            try:
+                parsed = urlparse(referral_url)
+                params = parse_qs(parsed.query)
+                campaign_ref = params.get("campaign_id", [None])[0]
+                if campaign_ref:
+                    campaign = session.query(Campaign).filter_by(id=int(campaign_ref)).first()
+                    if campaign:
+                        return campaign.id
+            except (ValueError, TypeError):
+                pass
 
-            if campaign_ref:
-                campaign = session.query(Campaign).filter_by(id=int(campaign_ref)).first()
-                return campaign.id if campaign else None
-        except (ValueError, TypeError):
-            pass
+        # Strategy 2: Match by product URL in active campaigns
+        product_url = order_detail.get("productOrderUrl", "") or order_detail.get("productUrl", "")
+        if product_url:
+            active_campaigns = (
+                session.query(Campaign)
+                .filter(Campaign.status == "active")
+                .filter(Campaign.post_url.isnot(None))
+                .all()
+            )
+            for campaign in active_campaigns:
+                if campaign.post_url and campaign.post_url in product_url:
+                    return campaign.id
 
         return None
 

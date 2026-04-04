@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 
 from shared.db import Campaign, Influencer, Product, Order
+from shared.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +101,10 @@ class MatchingEngine:
     3. 협업 필터링 (30%)
     """
 
-    # Score weights
-    W_CATEGORY = 0.30
-    W_PERFORMANCE = 0.40
-    W_COLLABORATION = 0.30
+    # Score weights (from config)
+    W_CATEGORY = settings.MATCH_W_CATEGORY
+    W_PERFORMANCE = settings.MATCH_W_PERFORMANCE
+    W_COLLABORATION = settings.MATCH_W_COLLABORATION
 
     def __init__(self, db: Session):
         self.db = db

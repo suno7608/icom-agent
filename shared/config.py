@@ -48,6 +48,17 @@ class Settings:
 
     # ROI Settings
     ROI_THRESHOLD: float = float(os.getenv("ROI_THRESHOLD", "5.0"))
+    BUDGET_STEP: float = float(os.getenv("BUDGET_STEP", "500000.0"))
+    MAX_BUDGET: float = float(os.getenv("MAX_BUDGET", "5000000.0"))
+
+    # Agent Tier Thresholds
+    TIER_HIGH_THRESHOLD: int = int(os.getenv("TIER_HIGH_THRESHOLD", "500"))
+    TIER_LOW_THRESHOLD: int = int(os.getenv("TIER_LOW_THRESHOLD", "100"))
+
+    # Matching Engine Weights
+    MATCH_W_CATEGORY: float = float(os.getenv("MATCH_W_CATEGORY", "0.30"))
+    MATCH_W_PERFORMANCE: float = float(os.getenv("MATCH_W_PERFORMANCE", "0.40"))
+    MATCH_W_COLLABORATION: float = float(os.getenv("MATCH_W_COLLABORATION", "0.30"))
 
     # Data Collection Intervals (seconds)
     SMARTSTORE_POLL_INTERVAL: int = int(os.getenv("SMARTSTORE_POLL_INTERVAL", "300"))  # 5 minutes
